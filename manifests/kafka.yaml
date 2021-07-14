@@ -13,7 +13,20 @@ spec:
   selector:
     app: kafka
 ---
-apiVersion: policy/v1beta1
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-cs
+  labels:
+    app: kafka
+spec:
+  ports:
+  - port: 9093
+    name: server
+  selector:
+    app: kafka
+---
+apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: kafka-pdb
@@ -23,13 +36,16 @@ spec:
       app: kafka
   maxUnavailable: 1
 ---
-apiVersion: apps/v1beta1
+apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: kafka
 spec:
+  selector:
+    matchLabels:
+      app: kafka
   serviceName: kafka-hs
-  replicas: 5
+  replicas: 3
   podManagementPolicy: Parallel
   updateStrategy:
       type: RollingUpdate
@@ -63,7 +79,7 @@ spec:
       containers:
       - name: k8skafka
         imagePullPolicy: Always
-        image: gcr.io/google_containers/kubernetes-kafka:1.0-10.2.1
+        image: registry.kubernetes.local/kafka:2.13-2.8.0
         resources:
           requests:
             memory: "12Gi"
@@ -76,13 +92,14 @@ spec:
         - -c
         - "exec kafka-server-start.sh /opt/kafka/config/server.properties --override broker.id=${HOSTNAME##*-} \
           --override listeners=PLAINTEXT://:9093 \
-          --override zookeeper.connect=zk-cs.default.svc.cluster.local:2181 \
+          --override zookeeper.connect=zk-cs:2181 \
+          -override advertised.listeners=PLAINTEXT://${HOSTNAME}.kafka.svc.cluster.local:9093 \
           --override log.dir=/var/lib/kafka \
           --override auto.create.topics.enable=true \
           --override auto.leader.rebalance.enable=true \
           --override background.threads=10 \
           --override compression.type=producer \
-          --override delete.topic.enable=false \
+          --override delete.topic.enable=true \
           --override leader.imbalance.check.interval.seconds=300 \
           --override leader.imbalance.per.broker.percentage=10 \
           --override log.flush.interval.messages=9223372036854775807 \
@@ -108,7 +125,7 @@ spec:
           --override offsets.retention.minutes=1440 \
           --override offsets.topic.compression.codec=0 \
           --override offsets.topic.num.partitions=50 \
-          --override offsets.topic.replication.factor=3 \
+          --override offsets.topic.replication.factor=2 \
           --override offsets.topic.segment.bytes=104857600 \
           --override queued.max.requests=500 \
           --override quota.consumer.default=9223372036854775807 \
@@ -136,7 +153,7 @@ spec:
           --override fetch.purgatory.purge.interval.requests=1000 \
           --override group.max.session.timeout.ms=300000 \
           --override group.min.session.timeout.ms=6000 \
-          --override inter.broker.protocol.version=0.10.2-IV0 \
+          --override inter.broker.protocol.version=0.11.0 \
           --override log.cleaner.backoff.ms=15000 \
           --override log.cleaner.dedupe.buffer.size=134217728 \
           --override log.cleaner.delete.retention.ms=86400000 \
@@ -170,11 +187,24 @@ spec:
         - name: datadir
           mountPath: /var/lib/kafka
         readinessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 40
+          periodSeconds: 10
+          successThreshold: 1
+          tcpSocket:
+            port: 9093
+          timeoutSeconds: 5
+        livenessProbe:
           exec:
            command: 
             - sh 
             - -c 
             - "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server=localhost:9093"
+          initialDelaySeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 5
+          periodSeconds: 15
+          successThreshold: 1
       securityContext:
         runAsUser: 1000
         fsGroup: 1000
@@ -185,4 +215,4 @@ spec:
       accessModes: [ "ReadWriteOnce" ]
       resources:
         requests:
-          storage: 10Gi
+          storage: 100Gi
